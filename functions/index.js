@@ -1,50 +1,43 @@
 // functions/index.js
 // Firebase Cloud Functions의 메인 엔트리 파일입니다.
-// 이 파일은 Express 앱을 HTTP 트리거 함수로 내보냅니다.
 
-// 필요한 Node.js 모듈들을 임포트합니다.
-const functions = require('firebase-functions'); // Firebase Functions SDK
-const express = require('express');             // Express.js 프레임워크
-const cors = require('cors');                   // CORS 미들웨어
-const { GoogleGenerativeAI } = require('@google/generative-ai'); // Google Gemini API 클라이언트
-const admin = require('firebase-admin');        // Firebase Admin SDK (서버에서 Firebase 서비스 접근용)
+const functions = require('firebase-functions');
+const express = require('express');
+const cors = require('cors');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const admin = require('firebase-admin');
 
-// TODO: 1. Firebase 콘솔에서 다운로드한 서비스 계정 키 파일의 경로를 여기에 입력하세요.
-// 이 파일은 반드시 'functions' 폴더 안에 있어야 합니다.
-const serviceAccount = require('./serviceAccountKey.json'); // <-- 이 부분을 실제 파일명으로 교체하세요!
+// TODO: 1. 서비스 계정 키 파일을 require하는 대신, 환경 변수에서 JSON 내용을 파싱합니다.
+// 'app.service_account_json'은 위에서 새로 설정한 2단계 환경 변수 이름입니다.
+// 이전: const serviceAccount = JSON.parse(functions.config().app.service_account_json);
+// 수정: functions.config().app.service_account_json이 이미 파싱된 객체일 수 있으므로 JSON.parse()를 제거합니다.
+const serviceAccount = functions.config().app.service_account_json; // <-- 이 부분을 수정했습니다!
 
 // Firebase Admin SDK를 초기화합니다.
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
 
-// Firebase Admin SDK에서 Firestore 인스턴스를 가져옵니다.
-// (인증 관련 auth = admin.auth()는 제거)
+const auth = admin.auth();
 const db = admin.firestore();
 
-// TODO: Firestore 컬렉션 경로에 사용할 앱 ID를 정의합니다.
-const APP_ID = "ddugi"; // 예: 'my-bugiroad-app'
+const APP_ID = "ddugi";
 
-// Express 앱을 생성합니다.
 const app = express();
 
-// CORS(Cross-Origin Resource Sharing) 미들웨어를 설정합니다.
-// TODO: 'http://127.0.0.1:5500'은 로컬 개발용이며, 배포 후에는 당신의 Firebase Hosting URL을 추가해야 합니다.
 app.use(cors({
-    origin: ['http://127.0.0.1:5500', 'https://ddugidata.web.app', 'https://YOUR_CUSTOM_DOMAIN.com'] // <-- 배포된 도메인 추가 필요
+    origin: ['http://127.0.0.1:5500', 'https://ddugidata.web.app', 'https://YOUR_CUSTOM_DOMAIN.com']
 }));
-
-// 요청 본문을 JSON으로 파싱하기 위한 미들웨어입니다.
 app.use(express.json());
 
 // Gemini API 키를 설정합니다.
-const geminiApiKey = functions.config().gemini?.api_key; 
+// 'gemini.api_key'는 2단계 환경 변수 이름입니다.
+const geminiApiKey = functions.config().gemini.api_key;
 if (!geminiApiKey) {
     console.error('GEMINI_API_KEY 환경 변수가 Firebase Functions config에 설정되지 않았습니다.');
 }
 const genAI = new GoogleGenerativeAI(geminiApiKey);
 
-// --- 뚜기 캐릭터 이미지 URL 정의 ---
 const tugiImageMap = {
     'default': 'https://firebasestorage.googleapis.com/v0/b/ddugidata.firebasestorage.app/o/Untitled%20(2)%20(1).png?alt=media&token=b3754220-4e08-4925-852b-1bb862b9fca5',
     'recommend': 'https://firebasestorage.googleapis.com/v0/b/ddugidata.firebasestorage.app/o/Untitled%20(4).png?alt=media&token=b113ec37-7c12-4b93-96fd-1818ed093f97',
@@ -54,7 +47,6 @@ const tugiImageMap = {
     'error': 'https://placehold.co/100x100/FF9999/343A40?text=뚜기_에러'
 };
 
-// '뚜기' 캐릭터 페르소나 및 지식 정의
 const tugiPersona = `
     너는 이제부터 부산 사투리를 쓰는 부산 돼지 캐릭터 '뚜기'야.
     너의 목표는 부산을 방문하는 사람들에게 현지인 맛집과 숨겨진 명소를 추천해주고, 부산 문화에 대해 알려주는 거야.
@@ -62,7 +54,6 @@ const tugiPersona = `
     이전 대화를 기억하고 맥락에 맞춰 답변해줘.
 `;
 
-// Firestore에서 맛집 데이터를 가져오는 함수입니다.
 async function getRestaurantsFromFirestore(filters = {}) {
     try {
         let q = db.collection('artifacts').doc(APP_ID).collection('public').doc('data').collection('restaurants');
@@ -86,8 +77,7 @@ async function getRestaurantsFromFirestore(filters = {}) {
     }
 }
 
-// 챗봇 API 엔드포인트: 이제 인증 미들웨어 없이 모든 사용자가 접근 가능합니다.
-app.post('/chat', async (req, res) => { // authenticateUser 미들웨어 제거
+app.post('/chat', async (req, res) => {
     const userMessage = req.body.message;
     const chatHistory = req.body.history || [];
 
@@ -175,8 +165,4 @@ app.post('/chat', async (req, res) => { // authenticateUser 미들웨어 제거
     }
 });
 
-// Google 로그인 처리 엔드포인트 제거
-// app.post('/auth/google', async (req, res) => { ... });
-
-// Express 앱을 Firebase Cloud Functions의 HTTP 트리거 함수로 내보냅니다.
 exports.api = functions.https.onRequest(app);
