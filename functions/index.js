@@ -1,42 +1,65 @@
 // functions/index.js
-// Firebase Cloud Functions의 메인 엔트리 파일입니다.
+// Cloud Functions 2세대 HTTP 함수의 예시입니다.
 
+// 필요한 모듈을 임포트합니다.
+// 'functions' 객체는 functions.config()를 위해 필요합니다.
 const functions = require('firebase-functions');
+// onRequest는 Cloud Functions 2세대에서 HTTP 요청을 처리하는 방식입니다.
+const { onRequest } = require('firebase-functions/v2/https');
+// setGlobalOptions는 함수에 대한 전역 설정을 지정할 때 사용됩니다.
+const { setGlobalOptions } = require('firebase-functions/v2');
+
 const express = require('express');
 const cors = require('cors');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const admin = require('firebase-admin');
 
-// TODO: 1. 서비스 계정 키 파일을 require하는 대신, 환경 변수에서 JSON 내용을 파싱합니다.
-// 'app.service_account_json'은 위에서 새로 설정한 2단계 환경 변수 이름입니다.
-// 이전: const serviceAccount = JSON.parse(functions.config().app.service_account_json);
-// 수정: functions.config().app.service_account_json이 이미 파싱된 객체일 수 있으므로 JSON.parse()를 제거합니다.
-const serviceAccount = functions.config().app.service_account_json; // <-- 이 부분을 수정했습니다!
+// Firebase Admin SDK 초기화는 함수가 호출될 때 한 번만 수행되도록 합니다.
+let initializedAdminApp = null;
+function getInitializedAdminApp() {
+  if (!initializedAdminApp) {
+    // 환경 변수에서 서비스 계정 JSON 문자열을 가져와 파싱합니다.
+    // functions.config()는 'firebase functions:config:set'으로 설정된 값을 읽습니다.
+    // 'app.service_account_json'은 이전에 설정한 2단계 환경 변수 이름입니다.
+    const serviceAccount = JSON.parse(functions.config().app.service_account_json); // <-- 이 부분 수정
+    initializedAdminApp = admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+  }
+  return initializedAdminApp;
+}
 
-// Firebase Admin SDK를 초기화합니다.
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
+// Firestore 및 Auth 인스턴스 가져오기
+function getDb() { return admin.firestore(getInitializedAdminApp()); }
+function getAuth() { return admin.auth(getInitializedAdminApp()); }
 
-const auth = admin.auth();
-const db = admin.firestore();
-
+// TODO: Firestore 컬렉션 경로에 사용할 앱 ID를 정의합니다.
 const APP_ID = "ddugi";
 
 const app = express();
-
-app.use(cors({
-    origin: ['http://127.0.0.1:5500', 'https://ddugidata.web.app', 'https://YOUR_CUSTOM_DOMAIN.com']
-}));
+// CORS 설정: 프론트엔드 도메인을 허용합니다.
+// TODO: 'https://YOUR_PROJECT_ID.web.app', 'https://YOUR_CUSTOM_DOMAIN.com'을 실제 URL로 교체
+app.use(cors({ origin: ['http://127.0.0.1:5500', 'https://ddugidata.web.app', 'https://YOUR_CUSTOM_DOMAIN.com'] }));
 app.use(express.json());
 
-// Gemini API 키를 설정합니다.
-// 'gemini.api_key'는 2단계 환경 변수 이름입니다.
-const geminiApiKey = functions.config().gemini.api_key;
-if (!geminiApiKey) {
-    console.error('GEMINI_API_KEY 환경 변수가 Firebase Functions config에 설정되지 않았습니다.');
+// Gemini API 키를 환경 변수에서 가져옵니다.
+// 'gemini.api_key'는 이전에 설정한 2단계 환경 변수 이름입니다.
+let genAIInstance = null;
+function getGenAI() {
+  if (!genAIInstance) {
+    const geminiApiKey = functions.config().gemini.api_key; // <-- 이 부분 수정
+    if (!geminiApiKey) {
+        console.error('GEMINI_API_KEY 환경 변수가 설정되지 않았습니다!');
+        throw new Error('Gemini API Key is not configured.');
+    }
+    genAIInstance = new GoogleGenerativeAI(geminiApiKey);
+  }
+  return genAIInstance;
 }
-const genAI = new GoogleGenerativeAI(geminiApiKey);
+
+// TODO: 이 함수는 Cloud Functions 2세대에서 전역 옵션을 설정하는 방식입니다.
+// 필요한 경우 주석을 해제하고 리전을 설정하세요.
+// setGlobalOptions({ region: 'us-central1' }); // 또는 'asia-northeast3' (서울)
 
 const tugiImageMap = {
     'default': 'https://firebasestorage.googleapis.com/v0/b/ddugidata.firebasestorage.app/o/Untitled%20(2)%20(1).png?alt=media&token=b3754220-4e08-4925-852b-1bb862b9fca5',
@@ -56,7 +79,8 @@ const tugiPersona = `
 
 async function getRestaurantsFromFirestore(filters = {}) {
     try {
-        let q = db.collection('artifacts').doc(APP_ID).collection('public').doc('data').collection('restaurants');
+        const dbInstance = getDb(); // 초기화된 db 인스턴스 사용
+        let q = dbInstance.collection('artifacts').doc(APP_ID).collection('public').doc('data').collection('restaurants');
 
         if (filters.location) {
             q = q.where('location', '==', filters.location);
@@ -89,6 +113,7 @@ app.post('/chat', async (req, res) => {
     let currentTugiImageKey = 'default';
 
     try {
+        const genAI = getGenAI(); // 초기화된 GenAI 인스턴스 사용
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
         const lowerMessage = userMessage.toLowerCase();
@@ -165,4 +190,4 @@ app.post('/chat', async (req, res) => {
     }
 });
 
-exports.api = functions.https.onRequest(app);
+exports.api = onRequest(app);
